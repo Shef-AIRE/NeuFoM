@@ -20,7 +20,7 @@ from sklearn.model_selection import StratifiedKFold
 import pandas as pd
 
 from dataset.dataset import ArrowDataset, SubsetWithMode, collate_fn
-from model.model import MultimodalfMRI, ResNetfMRI, BrainLMfMRI
+from model.model import MultimodalfMRI
 
 from datetime import datetime
 
