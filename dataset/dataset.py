@@ -46,7 +46,7 @@ def random_segment_padding(data, target_shape):
 
     return padded_data
 
-def preprocess_fmri(examples, coords_ds, recording_col_name, variable_of_interest_col_name="Response", moving_window_len=200, padding_mode="random_segment"):
+def preprocess_fmri(examples, coords_ds, recording_col_name, variable_of_interest_col_name="Response", moving_window_len=200, padding_mode="random_segment", is_train=True):
     """
     Preprocessing function for dataset samples. This function is passed into Trainer as
     a preprocessor which takes in one row of the loaded dataset and constructs a model
@@ -67,12 +67,14 @@ def preprocess_fmri(examples, coords_ds, recording_col_name, variable_of_interes
     # print(signal_vector.shape)
     # Choose random starting index, take window of moving_window_len points for each region
     if signal_vector.shape[1] > moving_window_len:
-        start_idx = random.randint(0, signal_vector.shape[1] - moving_window_len)
-        end_idx = start_idx + moving_window_len  # 24 patches per voxel, * 424 = 10176 total per sample
-        signal_window = signal_vector[:, start_idx: end_idx]
-        # print(start_idx, end_idx)
+        if is_train:
+            start_idx = random.randint(0, signal_vector.shape[1] - moving_window_len)
+            end_idx = start_idx + moving_window_len  # 24 patches per voxel, * 424 = 10176 total per sample
+            signal_window = signal_vector[:, start_idx: end_idx]
+        else:
+            signal_window = signal_vector[:, :moving_window_len]
     elif signal_vector.shape[1] < moving_window_len:
-        if padding_mode == "random_segment":
+        if padding_mode == "random_segment" and is_train:
             signal_window = random_segment_padding(signal_vector, (signal_vector.shape[0], moving_window_len))
         else:
             signal_window = torch.nn.functional.pad(signal_vector, (0, moving_window_len - signal_vector.shape[1]), "constant", 0)
@@ -94,28 +96,22 @@ def preprocess_fmri(examples, coords_ds, recording_col_name, variable_of_interes
         window_xyz_list.append(xyz)
     window_xyz_list = torch.stack(window_xyz_list)
 
-    # Add in key-value pairs for model inputs which CellLM is expecting in forward() function:
-    #  signal_vectors and xyz_vectors
-    #  These lists will be stacked into torch Tensors by collate() function (defined above).
     examples["signal_vectors"] = signal_window.unsqueeze(0)
     examples["xyz_vectors"] = window_xyz_list.unsqueeze(0)
-    # examples["brain_network"] = np.array(brain_net)
     examples["label"] = label
     return examples
 
 
 
 class ArrowDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, coords, recording_col_name, variable_of_interest_col_name, moving_window_len=200, structure_features="/home/wenrui/Projects/NeuroPain/fMRI/OpenNeuro/struct_stats.csv"):
+    def __init__(self, dataset, coords, recording_col_name, variable_of_interest_col_name, moving_window_len=200, structure_features="struct_stats.csv", is_train=True):
         self.dataset = dataset
         self.coords_ds = coords
         self.struct_features_path = structure_features
         self.recording_col_name = recording_col_name
         self.variable_of_interest_col_name = variable_of_interest_col_name
         self.moving_window_len = moving_window_len
-        
-        # self.labels
-        
+                
 
         structure_feature_names = [
             "SubjectID",
@@ -164,15 +160,16 @@ class ArrowDataset(torch.utils.data.Dataset):
             "CC_Mid_Anterior", 
             "CC_Anterior"
         ]
+
         if structure_features is not None:
             self.structure_features = pd.read_csv(structure_features)[structure_feature_names]
-            # self.structure_features = torch.tensor(self.structure_features, dtype=torch.float32)
         else:
             self.structure_features = None
         self.features, self.labels, self.structure_features = self._load_data()
         scaler = StandardScaler()
         self.structure_features = scaler.fit_transform(self.structure_features)
         self.structure_features = torch.tensor(self.structure_features, dtype=torch.float32)
+        self.is_train = is_train
 
     def __len__(self):
         return len(self.labels)
@@ -183,23 +180,13 @@ class ArrowDataset(torch.utils.data.Dataset):
         struc_features = []
         for recording_idx in range(self.dataset.num_rows):
             example1 = self.dataset[recording_idx]
-            if "vas" in self.variable_of_interest_col_name.lower():
-                filter_flag = (example1["Response"][0] > 0)
-            else:
-                filter_flag = (example1[self.variable_of_interest_col_name][0] >= 0)
-            if filter_flag:
-                features.append(example1)
-                labels.append(example1[self.variable_of_interest_col_name])
-                # print(self.variable_of_interest_col_name, example1[self.variable_of_interest_col_name])
-                # if "Subject" in example1.keys():
-                #     id_name = "Subject"
-                # else:
-                #     id_name = "subject"
-                # idx = example1[id_name][0] if "Shef" in self.struct_features_path else int(example1["Filename"].split(".")[0].split("-")[-1])
-                idx = int(example1["Filename"].split(".")[0].split("-")[-1])
-                if self.structure_features is not None:
-                    struc_features.append(self.structure_features[self.structure_features["SubjectID"] == idx].values[0, 1:])
-            # Wrap each value in the key:value pairs into a list (expected by preprocess() and collate())
+            
+            features.append(example1)
+            labels.append(example1[self.variable_of_interest_col_name])
+
+            idx = int(example1["Filename"].split(".")[0].split("-")[-1])
+            if self.structure_features is not None:
+                struc_features.append(self.structure_features[self.structure_features["SubjectID"] == idx].values[0, 1:])
             
         return features, labels, struc_features
 
@@ -207,27 +194,34 @@ class ArrowDataset(torch.utils.data.Dataset):
         example = self.features[idx]
         
 
-        processed_example = preprocess_fmri(example, self.coords_ds, self.recording_col_name, variable_of_interest_col_name=self.variable_of_interest_col_name, moving_window_len=self.moving_window_len)
-        # label = (torch.round(processed_example["label"]/20) - 1).long()
-        if "vas" in self.variable_of_interest_col_name.lower():
-            label = (processed_example["label"]//20 - 1).long()
-            if label == 4:
-                label = torch.tensor(3, dtype=torch.int64)  # Map 4 to 3
-        else:
-            label = processed_example["label"]
-        # print("After preprocess:", processed_example["brain_network"].shape)
+        processed_example = preprocess_fmri(example, self.coords_ds, self.recording_col_name, variable_of_interest_col_name=self.variable_of_interest_col_name, moving_window_len=self.moving_window_len, is_train=self.is_train)
+        label = processed_example["label"]
 
         return {
             "signal_vectors": processed_example["signal_vectors"].squeeze(0),
             "xyz_vectors": processed_example["xyz_vectors"].squeeze(0),
             "input_ids": processed_example["signal_vectors"].squeeze(0),
-            # "labels": processed_example["label"].squeeze(),   
             "labels": label,
             "idx": torch.tensor(idx, dtype=torch.int64),
-            # "brain_network": processed_example["brain_network"],
             "structure_feature": self.structure_features[idx] if self.structure_features is not None else None
         }
     
+
+
+class SubsetWithMode(torch.utils.data.Subset):
+    """Subset that overrides is_train for the underlying dataset when __getitem__ is called."""
+
+    def __init__(self, dataset, indices, is_train):
+        super().__init__(dataset, indices)
+        self.is_train = is_train
+
+    def __getitem__(self, idx):
+        original_is_train = self.dataset.is_train
+        self.dataset.is_train = self.is_train
+        try:
+            return super().__getitem__(idx)
+        finally:
+            self.dataset.is_train = original_is_train
 
 
 def collate_fn(example):
@@ -237,7 +231,6 @@ def collate_fn(example):
     which CellLM is expecting in forward() function:
         expression_vectors, sampled_gene_indices, and cell_indices
     """
-    # These inputs will go to model.forward(), names must match
     return {
         "signal_vectors": torch.stack([e["signal_vectors"] for e in example]),
         "xyz_vectors": torch.stack([e["xyz_vectors"] for e in example]),

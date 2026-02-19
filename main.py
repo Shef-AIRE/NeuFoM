@@ -19,7 +19,7 @@ from sklearn.model_selection import StratifiedKFold
 
 
 
-from dataset.dataset import ArrowDataset, collate_fn
+from dataset.dataset import ArrowDataset, SubsetWithMode, collate_fn
 from model.model import MultimodalfMRI
 
 from datetime import datetime
@@ -34,7 +34,7 @@ if __name__=="__main__":
     parser.add_argument("--moving_window_len", type=int, default=200)
     parser.add_argument("--kfold", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--channel_structure_features", type=int, default=-1)
     parser.add_argument("--label_name", type=str, default="Response")
     parser.add_argument("--brain_lm_path", type=str, default="./brainlm_mae/pretrained_models/2023-06-06-22_15_00-checkpoint-1400")
@@ -50,8 +50,8 @@ if __name__=="__main__":
     moving_window_len = args.moving_window_len
     kfold = args.kfold
 
-    data_path = "/media/wenrui/Data/NeuroPain/fMRI/OpenNeuro/Arrow_patient/"
-    structure_features_path = "/media/wenrui/Data/NeuroPain/fMRI/OpenNeuro/struct_stats.csv"
+    data_path = "./data"
+    structure_features_path = "./data/struct_stats.csv"
 
 
     output_path = f"./results"
@@ -87,7 +87,7 @@ if __name__=="__main__":
     dataset = ArrowDataset(
         concat_ds, 
         coords_ds, 
-        col_name, 
+        col_name,
         variable_of_interest_col_name=variable_of_interest_col_name, 
         moving_window_len=moving_window_len, 
         structure_features=structure_features_path
@@ -104,8 +104,8 @@ if __name__=="__main__":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-7)
         
 
-        train_set = torch.utils.data.Subset(dataset, train_idx)
-        val_set = torch.utils.data.Subset(dataset, val_idx)
+        train_set = SubsetWithMode(dataset, train_idx, is_train=True)
+        val_set = SubsetWithMode(dataset, val_idx, is_train=False)
         trainloader = torch.utils.data.DataLoader(
             train_set,
             batch_size=args.batch_size,
