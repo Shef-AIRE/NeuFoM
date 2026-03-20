@@ -1,4 +1,4 @@
-# FMM_TCS
+# NeuFoM
 This is the official released repository for the manuscript "*Interpretable foundation-model-boosted multimodal learning facilitates precision medicine for neuropathic pain*".
 
 ## Environment preparation
